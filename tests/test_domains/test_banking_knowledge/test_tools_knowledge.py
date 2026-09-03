@@ -9,6 +9,7 @@ This module tests ALL tools in the banking_knowledge domain, covering:
 - db_query module operations
 """
 
+import copy
 import json
 
 import pytest
@@ -586,6 +587,60 @@ class TestLogVerification:
         call(environment, "log_verification", args)
         resp = call(environment, "log_verification", args)
         assert "Failed" in resp.content or "already exist" in resp.content
+
+    IDENTITY = {
+        "name": "Amara Okonkwo",
+        "user_id": "user_001",
+        "address": "305 Magnolia Street, Houston, TX 77002",
+        "email": "amara@icloud.com",
+        "phone_number": "713-555-0963",
+        "date_of_birth": "08/11/1997",
+    }
+    CANONICAL_TIME = "2025-11-14 03:40:00 EST"
+    CANONICAL_RECORD_ID = "user_001_20251114_034000_EST"
+
+    def test_log_verification_hash_independent_of_time_format(
+        self, base_knowledge_db: TransactionalDB
+    ):
+        """The verification timestamp is stamped from the domain's fixed clock.
+
+        `verification_history` is part of the hashed DB state used for grading, so
+        the same verification must yield the same DB hash no matter how the caller
+        renders the (fixed) current time.
+        """
+        renderings = [
+            self.CANONICAL_TIME,
+            "2025-11-14 03:40:00",
+            "2025-11-14T03:40:00",
+            "11/14/2025 03:40:00 EST",
+            "The current time is 2025-11-14 03:40:00 EST.",
+        ]
+        hashes = set()
+        for rendering in renderings:
+            env = _create_test_environment(copy.deepcopy(base_knowledge_db))
+            resp = call(
+                env,
+                "log_verification",
+                {**self.IDENTITY, "time_verified": rendering},
+            )
+            assert not resp.error, resp.content
+            history = env.tools.db.verification_history.data
+            assert list(history) == [self.CANONICAL_RECORD_ID]
+            assert history[self.CANONICAL_RECORD_ID]["time_verified"] == (
+                self.CANONICAL_TIME
+            )
+            hashes.add(env.tools.db.get_hash())
+        assert len(hashes) == 1
+
+    def test_log_verification_without_time_verified(self, environment: Environment):
+        """`time_verified` is optional; the record is stamped server-side."""
+        resp = call(environment, "log_verification", dict(self.IDENTITY))
+        assert not resp.error, resp.content
+        history = environment.tools.db.verification_history.data
+        assert list(history) == [self.CANONICAL_RECORD_ID]
+        assert history[self.CANONICAL_RECORD_ID]["time_verified"] == (
+            self.CANONICAL_TIME
+        )
 
 
 # =============================================================================

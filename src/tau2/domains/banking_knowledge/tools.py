@@ -487,12 +487,13 @@ class KnowledgeTools(ToolKitBase):
         email: str,
         phone_number: str,
         date_of_birth: str,
-        time_verified: str,
+        time_verified: Optional[str] = None,
     ) -> str:
         """Log a verification record after successfully verifying a user's identity.
 
         Call this tool after you have verified a user by confirming 2 out of 4 identity fields
         (date of birth, email, phone number, address). This creates an audit record of the verification.
+        The verification time is recorded automatically from the current time.
 
         Args:
             name: The verified user's full name
@@ -501,8 +502,15 @@ class KnowledgeTools(ToolKitBase):
             email: The verified user's email
             phone_number: The verified user's phone number
             date_of_birth: The verified user's date of birth (MM/DD/YYYY format)
-            time_verified: The timestamp of the verification (e.g., "2025-11-14 03:40:00 EST")
+            time_verified: Deprecated and ignored. The verification time is stamped
+                automatically; this parameter is accepted only for backward compatibility.
         """
+        # Stamp the verification time from the domain clock, like every other
+        # timestamped write tool. The stored value (and the record ID derived from
+        # it) must not depend on how a caller happens to render the current time,
+        # because verification_history is part of the hashed DB state.
+        time_verified = get_now().strftime("%Y-%m-%d %H:%M:%S") + " EST"
+
         # Generate a deterministic ID for this verification record
         record_id = generate_verification_id(user_id, time_verified)
 
