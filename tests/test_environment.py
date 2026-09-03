@@ -10,6 +10,7 @@ from tau2.data_model.message import (
     UserMessage,
 )
 from tau2.data_model.tasks import (
+    Action,
     EnvAssertion,
     EnvFunctionCall,
     InitializationData,
@@ -18,7 +19,10 @@ from tau2.data_model.tasks import (
 from tau2.environment.environment import Environment
 from tau2.environment.tool import Tool
 from tau2.environment.toolkit import ToolKitBase, ToolType, is_tool
-from tau2.evaluator.evaluator_env import EnvironmentEvaluator
+from tau2.evaluator.evaluator_env import (
+    EnvironmentEvaluator,
+    GoldenActionReplayError,
+)
 
 
 @pytest.fixture
@@ -608,6 +612,84 @@ def test_environment_evaluator_hallucinated_only_scores_zero(
     assert reward_info.reward == 0.0
     assert reward_info.db_check is not None
     assert not reward_info.db_check.db_match
+
+
+def _task_with_failing_golden_action(base_task: Task) -> Task:
+    """`base_task` plus a golden action that raises on the mock domain
+    (`update_task_status` on a task id that does not exist)."""
+    task = base_task.model_copy(deep=True)
+    task.evaluation_criteria.actions.append(
+        Action(
+            action_id="broken_1",
+            requestor="assistant",
+            name="update_task_status",
+            arguments={"task_id": "task_does_not_exist", "status": "completed"},
+        )
+    )
+    return task
+
+
+def _clean_create_task_trajectory() -> list[Message]:
+    return [
+        UserMessage(
+            id="1",
+            content="Create a task called 'Important Meeting' for user_1",
+            role="user",
+        ),
+        AssistantMessage(
+            id="2",
+            content=None,
+            role="assistant",
+            tool_calls=[
+                ToolCall(
+                    id="create",
+                    name="create_task",
+                    arguments={"user_id": "user_1", "title": "Important Meeting"},
+                )
+            ],
+        ),
+        ToolMessage(
+            id="create",
+            content='{"task_id": "task_2", "title": "Important Meeting", "description": null, "status": "pending"}',
+            role="tool",
+        ),
+        AssistantMessage(id="3", content="Created the task for you.", role="assistant"),
+    ]
+
+
+def test_environment_evaluator_failing_golden_action_raises(
+    get_environment: Callable[[], Environment], base_task: Task
+):
+    """If a golden action errors while deriving the gold DB state, the gold
+    state is not the one the task author intended and any grade computed
+    against it is wrong. The evaluator must raise instead of grading."""
+    task = _task_with_failing_golden_action(base_task)
+
+    with pytest.raises(GoldenActionReplayError, match="update_task_status"):
+        EnvironmentEvaluator.calculate_reward(
+            environment_constructor=get_environment,
+            task=task,
+            full_trajectory=_clean_create_task_trajectory(),
+        )
+
+
+def test_environment_evaluator_failing_golden_action_lenient(
+    get_environment: Callable[[], Environment], base_task: Task
+):
+    """With strict_gold_replay=False the failure is only logged and the
+    trajectory is graded against the partially applied gold state. Here the
+    failing action is a no-op on the DB, so the clean trajectory still
+    matches."""
+    task = _task_with_failing_golden_action(base_task)
+
+    reward_info = EnvironmentEvaluator.calculate_reward(
+        environment_constructor=get_environment,
+        task=task,
+        full_trajectory=_clean_create_task_trajectory(),
+        strict_gold_replay=False,
+    )
+
+    assert reward_info.db_check is not None and reward_info.db_check.db_match
 
 
 def test_environment_set_state_strict_flag(

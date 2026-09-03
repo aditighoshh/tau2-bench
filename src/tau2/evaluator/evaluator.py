@@ -94,6 +94,7 @@ def evaluate_simulation(
     mode: CommunicationMode = CommunicationMode.HALF_DUPLEX,
     env_kwargs: dict = None,
     strict_replay: bool = True,
+    strict_gold_replay: bool = True,
 ) -> RewardInfo:
     """
     Evaluate the simulation based on the evaluation type.
@@ -112,6 +113,11 @@ def evaluate_simulation(
               Live evaluation keeps the default (True); trajectory re-grading
               passes False so recorded outputs that cosmetically predate
               current tool code do not abort the replay.
+        strict_gold_replay: Whether deriving the gold DB state should raise
+              when one of the task's golden actions errors (default True).
+              A failed golden action means the gold state, and therefore the
+              grade, is wrong; pass False to only warn and grade against the
+              partially applied gold state.
 
     Returns:
         RewardInfo with the evaluation results.
@@ -176,6 +182,7 @@ def evaluate_simulation(
             solo_mode=solo_mode,
             env_kwargs=env_kwargs,
             strict_replay=strict_replay,
+            strict_gold_replay=strict_gold_replay,
         )
     elif evaluation_type == EvaluationType.NL_ASSERTIONS:
         reward_info = NLEvaluator.calculate_reward(
@@ -201,6 +208,7 @@ def evaluate_simulation(
             solo_mode=solo_mode,
             env_kwargs=env_kwargs,
             strict_replay=strict_replay,
+            strict_gold_replay=strict_gold_replay,
         )
         action_reward_info = ActEvaluator.calculate_reward(
             task=task,

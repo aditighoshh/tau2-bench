@@ -9,9 +9,66 @@ from tau2.data_model.message import (
     UserMessage,
 )
 from tau2.data_model.simulation import DBCheck, EnvAssertionCheck, RewardInfo
-from tau2.data_model.tasks import RewardType, Task
+from tau2.data_model.tasks import Action, RewardType, Task
 from tau2.environment.environment import Environment
 from tau2.evaluator.evaluator_base import EvaluatorBase
+
+
+class GoldenActionReplayError(ValueError):
+    """Raised when a task's golden action fails to replay on the gold environment.
+
+    The gold DB state is derived by replaying `evaluation_criteria.actions` on a
+    fresh environment. If one of those actions errors, the gold state is not the
+    one the task author intended, and every trajectory graded against it gets a
+    wrong reward. This is a task-data (or tool) defect, not an agent failure, so
+    it must surface as an error instead of being absorbed into the grade.
+    """
+
+
+def replay_golden_actions(
+    gold_environment: Environment,
+    golden_actions: list[Action],
+    strict: bool = True,
+) -> list[tuple[Action, Exception]]:
+    """Replay the task's golden actions on `gold_environment`.
+
+    Args:
+        gold_environment: Fresh environment already set to the task's initial state.
+        golden_actions: `task.evaluation_criteria.actions`.
+        strict: When True (default), raise `GoldenActionReplayError` if any golden
+            action raises. When False, log each failure as a warning and continue,
+            returning the failures (the historical behaviour).
+
+    Returns:
+        The list of (action, exception) pairs for golden actions that raised.
+        Empty when the replay was clean.
+    """
+    failures: list[tuple[Action, Exception]] = []
+    for action in golden_actions:
+        try:
+            gold_environment.make_tool_call(
+                tool_name=action.name,
+                requestor=action.requestor,
+                **action.arguments,
+            )
+        except Exception as e:
+            failures.append((action, e))
+            logger.warning(
+                f"Error in golden actions {action.name}({action.arguments}): {e}"
+            )
+    if failures and strict:
+        details = "\n".join(
+            f"  - {action.name}({action.arguments}): {type(e).__name__}: {e}"
+            for action, e in failures
+        )
+        raise GoldenActionReplayError(
+            f"{len(failures)} of {len(golden_actions)} golden action(s) failed to "
+            "replay on the gold environment, so the gold DB state cannot be "
+            "trusted. Fix the task's `evaluation_criteria.actions` (or the tool), "
+            "or pass strict_gold_replay=False to grade against the partial "
+            f"state anyway.\n{details}"
+        )
+    return failures
 
 
 class EnvironmentEvaluator(EvaluatorBase[Message]):
@@ -30,6 +87,7 @@ class EnvironmentEvaluator(EvaluatorBase[Message]):
         solo_mode: bool = False,
         env_kwargs: dict = None,
         strict_replay: bool = True,
+        strict_gold_replay: bool = True,
     ) -> RewardInfo:
         """
         Calculate the reward for the simulation.
@@ -41,6 +99,11 @@ class EnvironmentEvaluator(EvaluatorBase[Message]):
             strict_replay: forwarded to Environment.set_state(strict=...). Set
                 False when re-grading historical trajectories whose recorded
                 tool outputs may cosmetically differ from current tool code.
+            strict_gold_replay: When True (default), raise
+                `GoldenActionReplayError` if any of the task's golden actions
+                errors while deriving the gold DB state, since the resulting
+                grade would be wrong. Set False to only warn and grade against
+                the partially applied gold state (the historical behaviour).
         Returns:
             RewardInfo
         """
@@ -102,17 +165,9 @@ class EnvironmentEvaluator(EvaluatorBase[Message]):
             strict=strict_replay,
         )
         golden_actions = task.evaluation_criteria.actions or []
-        for action in golden_actions:
-            try:
-                gold_environment.make_tool_call(
-                    tool_name=action.name,
-                    requestor=action.requestor,
-                    **action.arguments,
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Error in golden actions {action.name}({action.arguments}): {e}"
-                )
+        replay_golden_actions(
+            gold_environment, golden_actions, strict=strict_gold_replay
+        )
 
         # Comparing the environments
         agent_db_hash = gold_environment.get_db_hash()
@@ -234,6 +289,7 @@ class FullDuplexEnvironmentEvaluator(EvaluatorBase[Tick]):
         solo_mode: bool = False,
         env_kwargs: dict = None,
         strict_replay: bool = True,
+        strict_gold_replay: bool = True,
     ) -> RewardInfo:
         """
         Calculate the reward for the simulation.
@@ -246,6 +302,11 @@ class FullDuplexEnvironmentEvaluator(EvaluatorBase[Tick]):
             strict_replay: forwarded to Environment.set_state(strict=...). Set
                 False when re-grading historical trajectories whose recorded
                 tool outputs may cosmetically differ from current tool code.
+            strict_gold_replay: When True (default), raise
+                `GoldenActionReplayError` if any of the task's golden actions
+                errors while deriving the gold DB state, since the resulting
+                grade would be wrong. Set False to only warn and grade against
+                the partially applied gold state (the historical behaviour).
         Returns:
             RewardInfo
         """
@@ -309,17 +370,9 @@ class FullDuplexEnvironmentEvaluator(EvaluatorBase[Tick]):
             strict=strict_replay,
         )
         golden_actions = task.evaluation_criteria.actions or []
-        for action in golden_actions:
-            try:
-                gold_environment.make_tool_call(
-                    tool_name=action.name,
-                    requestor=action.requestor,
-                    **action.arguments,
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Error in golden actions {action.name}({action.arguments}): {e}"
-                )
+        replay_golden_actions(
+            gold_environment, golden_actions, strict=strict_gold_replay
+        )
 
         # Comparing the environments
         agent_db_hash = gold_environment.get_db_hash()
